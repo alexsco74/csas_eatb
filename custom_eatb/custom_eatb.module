@@ -1,0 +1,408 @@
+<?php
+
+/**
+ * @file
+ * Custom entityreference autocomplete tags better
+ */
+
+
+/**
+ * Implements hook_field_widget_info().
+ */
+function custom_eatb_field_widget_info() {
+  $widgets['custom_eatb_entityreference_autocomplete_tags'] = array(
+    'label' => t('Autocomplete (Tags style better)'),
+    'description' => t('An autocomplete text field.'),
+    'field types' => array('entityreference'),
+    'settings' => array(
+      'match_operator' => 'CONTAINS',
+      'size' => 60,
+      'path' => '',
+    ),
+    'behaviors' => array(
+      'multiple values' => FIELD_BEHAVIOR_CUSTOM,
+    ),
+  );
+
+  return $widgets;
+}
+
+/**
+ * Implements hook_field_widget_settings_form().
+ */
+function custom_eatb_field_widget_settings_form($field, $instance) {
+  $widget = $instance['widget'];
+  $settings = $widget['settings'] + field_info_widget_settings($widget['type']);
+
+  $form = array();
+
+  if ($widget['type'] == 'custom_eatb_entityreference_autocomplete_tags') {
+    $form['match_operator'] = array(
+      '#type' => 'select',
+      '#title' => t('Autocomplete matching'),
+      '#default_value' => $settings['match_operator'],
+      '#options' => array(
+        'STARTS_WITH' => t('Starts with'),
+        'CONTAINS' => t('Contains'),
+      ),
+      '#description' => t('Select the method used to collect autocomplete suggestions. Note that <em>Contains</em> can cause performance issues on sites with thousands of nodes.'),
+    );
+    $form['size'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Size of textfield'),
+      '#default_value' => $settings['size'],
+      '#element_validate' => array('_element_validate_integer_positive'),
+      '#required' => TRUE,
+    );
+  }
+
+  return $form;
+}
+
+/**
+ * Implements hook_field_widget_form().
+ */
+function custom_eatb_field_widget_form(&$form, &$form_state, $field, $instance, $langcode, $items, $delta, $element) {
+
+  // Ensure that the entity target type exists before displaying the widget.
+  $entity_info = entity_get_info($field['settings']['target_type']);
+  if (empty($entity_info)) {
+    return;
+  }
+  $entity_type = $instance['entity_type'];
+  $entity = isset($element['#entity']) ? $element['#entity'] : NULL;
+  $handler = entityreference_get_selection_handler($field, $instance, $entity_type, $entity);
+
+  if ($instance['widget']['type'] == 'custom_eatb_entityreference_autocomplete_tags') {
+
+    $entity_ids = array();
+    $entity_labels = array();
+
+    // Build an array of entities ID.
+    foreach ($items as $item) {
+      $entity_ids[] = $item['target_id'];
+    }
+
+    // Load those entities and loop through them to extract their labels.
+    $entities = entity_load($field['settings']['target_type'], $entity_ids);
+
+    foreach ($entities as $entity_id => $entity_item) {
+      $label = $handler->getLabel($entity_item);
+      $key = "$label ($entity_id)";
+
+      // Labels containing commas or quotes must be wrapped in quotes.
+      if (strpos($key, ',') !== FALSE || strpos($key, '"') !== FALSE) {
+        $key = '"' . str_replace('"', '""', $key) . '"';
+      }
+      $entity_labels[] = $key;
+    }
+
+    // Prepare the autocomplete path.
+    if (!empty($instance['widget']['settings']['path'])) {
+      $autocomplete_path = $instance['widget']['settings']['path'];
+    }
+    else {
+      $autocomplete_path = 'custom-eatb/entityreference/autocomplete/tags';
+    }
+
+    $autocomplete_path .= '/' . $field['field_name'] . '/' . $instance['entity_type'] . '/' . $instance['bundle'] . '/';
+
+    // Use <NULL> as a placeholder in the URL when we don't have an entity.
+    // Most webservers collapse two consecutive slashes.
+    $id = 'NULL';
+    if ($entity) {
+      list($eid) = entity_extract_ids($entity_type, $entity);
+      if ($eid) {
+        $id = $eid;
+      }
+    }
+    $autocomplete_path .= $id;
+    $element += array(
+      '#type' => 'custom_eatb_autocomplete_tags_combine',
+      '#default_value' => implode(', ', $entity_labels),
+      '#autocomplete_path' => $autocomplete_path,
+      '#size' => $instance['widget']['settings']['size'],
+      '#element_validate' => array('_custom_eatb_entityreference_autocomplete_tags_validate'),
+    );
+    return $element;
+  }
+}
+
+function _custom_eatb_entityreference_autocomplete_tags_validate($element, &$form_state, $form) {
+  $value = array();
+  // If a value was entered into the autocomplete...
+  if (!empty($element['#value'])) {
+    $entities = drupal_explode_tags($element['#value']);
+    $value = array();
+    foreach ($entities as $entity) {
+      // Take "label (entity id)', match the id from parenthesis.
+      if (preg_match("/.+\((\d+)\)/", $entity, $matches)) {
+        $value[] = array(
+          'target_id' => $matches[1],
+        );
+      }
+      else {
+        // Try to get a match from the input string when the user didn't use the
+        // autocomplete but filled in a value manually.
+        $field = field_info_field($element['#field_name']);
+        $handler = custom_eatb_entityreference_get_selection_handler($field);
+        $value[] = array(
+          'target_id' => $handler->validateAutocompleteInput($entity, $element, $form_state, $form),
+        );
+      }
+    }
+  }
+  // Update the value of this element so the field can validate the product IDs.
+  form_set_value($element, $value, $form_state);
+}
+
+/**
+ * Get the selection handler for a given entityreference field.
+ */
+function custom_eatb_entityreference_get_selection_handler($field, $instance = NULL, $entity_type = NULL, $entity = NULL) {
+  ctools_include('plugins');
+  $handler = $field['settings']['handler'];
+  $class = ctools_plugin_load_class('entityreference', 'selection', $handler, 'class');
+
+  if (class_exists($class)) {
+    return call_user_func(array(
+      $class,
+      'getInstance'
+    ), $field, $instance, $entity_type, $entity);
+  }
+  else {
+    return EntityReference_SelectionHandler_Broken::getInstance($field, $instance, $entity_type, $entity);
+  }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function custom_eatb_menu() {
+  $items = array();
+  $items['custom-eatb/entityreference/autocomplete/tags/%/%/%'] = array(
+    'title' => 'Entity Reference Autocomplete',
+    'page callback' => 'custom_eatb_entityreference_autocomplete_callback',
+    'page arguments' => array(3, 4, 5, 6),
+    'access callback' => 'custom_eatb_entityreference_autocomplete_access_callback',
+    'access arguments' => array(3, 4, 5, 6),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Menu Access callback for the autocomplete widget.
+ *
+ * @param $type
+ *   The widget type (i.e. 'tags').
+ * @param $field_name
+ *   The name of the entity-reference field.
+ * @param $entity_type
+ *   The entity type.
+ * @param $bundle_name
+ *   The bundle name.
+ * @return
+ *   True if user can access this menu item.
+ */
+function custom_eatb_entityreference_autocomplete_access_callback($type, $field_name, $entity_type, $bundle_name) {
+  $field = field_info_field($field_name);
+  $instance = field_info_instance($entity_type, $field_name, $bundle_name);
+
+  if (!$field || !$instance || $field['type'] != 'entityreference' || !field_access('edit', $field, $entity_type)) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/**
+ * Menu callback: autocomplete the label of an entity.
+ *
+ * @param $type
+ *   The widget type (i.e. 'tags').
+ * @param $field_name
+ *   The name of the entity-reference field.
+ * @param $entity_type
+ *   The entity type.
+ * @param $bundle_name
+ *   The bundle name.
+ * @param $entity_id
+ *   Optional; The entity ID the entity-reference field is attached to.
+ *   Defaults to ''.
+ * @param $string
+ *   The label of the entity to query by.
+ */
+function custom_eatb_entityreference_autocomplete_callback($type, $field_name, $entity_type, $bundle_name, $entity_id = '', $string = '') {
+
+  // If the request has a '/' in the search text, then the menu system will have
+  // split it into multiple arguments and $string will only be a partial. We want
+  //  to make sure we recover the intended $string.
+  $args = func_get_args();
+  // Shift off the $type, $field_name, $entity_type, $bundle_name, and $entity_id args.
+  array_shift($args);
+  array_shift($args);
+  array_shift($args);
+  array_shift($args);
+  array_shift($args);
+  $string = implode('/', $args);
+  $field = field_info_field($field_name);
+  $instance = field_info_instance($entity_type, $field_name, $bundle_name);
+
+  return custom_eatb_entityreference_autocomplete_callback_get_matches($type, $field, $instance, $entity_type, $entity_id, $string);
+}
+
+/**
+ * Return JSON based on given field, instance and string.
+ *
+ * This function can be used by other modules that wish to pass a mocked
+ * definition of the field on instance.
+ *
+ * @param $type
+ *   The widget type (i.e. 'tags').
+ * @param $field
+ *   The field array defintion.
+ * @param $instance
+ *   The instance array defintion.
+ * @param $entity_type
+ *   The entity type.
+ * @param $entity_id
+ *   Optional; The entity ID the entity-reference field is attached to.
+ *   Defaults to ''.
+ * @param $string
+ *   The label of the entity to query by.
+ */
+function custom_eatb_entityreference_autocomplete_callback_get_matches($type, $field, $instance, $entity_type, $entity_id = '', $string = '') {
+  $matches = array();
+
+  $entity = NULL;
+  if ($entity_id !== 'NULL') {
+    $entity = entity_load_single($entity_type, $entity_id);
+    $has_view_access = (entity_access('view', $entity_type, $entity) !== FALSE);
+    $has_update_access = (entity_access('update', $entity_type, $entity) !== FALSE);
+    if (!$entity || !($has_view_access || $has_update_access)) {
+      return MENU_ACCESS_DENIED;
+    }
+  }
+
+  $handler = entityreference_get_selection_handler($field, $instance, $entity_type, $entity);
+
+  if ($type == 'tags') {
+    // The user enters a comma-separated list of tags. We only autocomplete the last tag.
+    $tags_typed = drupal_explode_tags($string);
+    $tag_last = drupal_strtolower(array_pop($tags_typed));
+    if (!empty($tag_last)) {
+      $prefix = count($tags_typed) ? implode(', ', $tags_typed) . ', ' : '';
+    }
+  }
+  else {
+    // The user enters a single tag.
+    $prefix = '';
+    $tag_last = $string;
+  }
+
+  if (isset($tag_last)) {
+    // Get an array of matching entities.
+    $entity_labels = $handler->getReferencableEntities($tag_last, $instance['widget']['settings']['match_operator'], 10);
+
+    // Loop through the products and convert them into autocomplete output.
+    foreach ($entity_labels as $values) {
+      foreach ($values as $entity_id => $label) {
+        $key = "$label ($entity_id)";
+        // Strip things like starting/trailing white spaces, line breaks and tags.
+        $key = preg_replace('/\s\s+/', ' ', str_replace("\n", '', trim(decode_entities(strip_tags($key)))));
+        // Names containing commas or quotes must be wrapped in quotes.
+        if (strpos($key, ',') !== FALSE || strpos($key, '"') !== FALSE) {
+          $key = '"' . str_replace('"', '""', $key) . '"';
+        }
+        $matches[$prefix . $key] = '<div class="reference-autocomplete">' . $label . '</div>';
+      }
+    }
+  }
+
+  drupal_json_output($matches);
+}
+
+/**
+ * Implements hook_element_info().
+ *
+ * To keep the various pieces of the example together in external files,
+ * this just returns _form_example_elements().
+ */
+function custom_eatb_element_info() {
+  $types['custom_eatb_autocomplete_tags_combine'] = array(
+    '#input' => TRUE,
+    '#value_callback' => 'custom_eatb_autocomplete_tags_combine_value',
+    '#pre_render' => array('form_pre_render_conditional_form_element'),
+    '#process' => array('custom_eatb_autocomplete_tags_combine'),
+  );
+  return $types;
+}
+
+/**
+ * FAPI after build callback for the duration parameter type form.
+ * Fixes up the form value by applying the multiplier.
+ */
+function custom_eatb_autocomplete_tags_combine_after_build($element, &$form_state) {
+
+  // Set the elements value from either the value field or text field input.
+  $element['#value'] = isset($element['value_field']) ? $element['value_field']['#value'] : $element['textfield']['#value'];
+  form_set_value($element, $element['#value'], $form_state);
+  return $element;
+}
+
+/**
+ * Generates the basic form elements and javascript settings.
+ */
+function custom_eatb_autocomplete_tags_combine($element) {
+  $element['#after_build'][] = 'custom_eatb_autocomplete_tags_combine_after_build';
+  $m_path = drupal_get_path('module', 'custom_eatb');
+  $element['#attributes'] = array(
+    'class' => array('custom-eatb')
+  );
+  $element['#attached'] = array(
+    'js' => array($m_path . '/custom_eatb.js'),
+    'css' => array($m_path . '/custom_eatb.css'),
+  );
+
+  // Set default options for multiple values.
+  $element['#multiple'] = isset($element['#multiple']) ? $element['#multiple'] : FALSE;
+  $element['counter'] = array(
+    '#type' => 'container',
+    '#attributes' => array('class' => array('custom-eatb-counter-wr')),
+    'label' => array('#markup' => '<label>' . t('Count') . ': ' . '</label>'),
+    'inner' => array('#markup' => '<span>' . count(explode(', ', $element['#default_value'])) . '</span>'),
+  );
+  $element['tags_list'] = array(
+    '#type' => 'container',
+    '#attributes' => array('class' => array('custom-eatb-tags-wr')),
+  );
+  if (!empty($element['#default_value'])) {
+    $element['tags_list']['inner'] = array(
+      '#markup' => '<a class="custom-eatb-tag" href="#">' . str_replace(', ', '</a><a class="custom-eatb-tag" href="#">', $element['#default_value']) . '</a>'
+    );
+  }
+  $element['textfield'] = array(
+    '#type' => 'hidden',
+    '#attributes' => array('class' => array('custom-eatb-textfield')),
+    '#default_value' => isset($element['#default_value']) ? $element['#default_value'] : '',
+  );
+
+  $element['textfield_single'] = array(
+    '#type' => 'textfield',
+    '#attributes' => array('class' => array('custom-eatb-textfield-single')),
+    '#maxlength' => 1024,
+    '#size' => isset($element['#size']) ? $element['#size'] : '',
+    '#autocomplete_path' => isset($element['#autocomplete_path']) ? $element['#autocomplete_path'] : '',
+  );
+  $element['#tree'] = TRUE;
+  return $element;
+}
+
+/**
+ * Helper function to determine the value for a custom_eatb_autocomplete_tags_combine form
+ * element.
+ */
+function custom_eatb_autocomplete_tags_combine_value(&$element, $input = FALSE, $form_state = NULL) {
+  return array();
+}

@@ -1,0 +1,19 @@
+a.custom-eatb-tag {
+    padding: .25em .5em .25em 25px;
+    background-color: #eee;
+    color: #000;
+    text-decoration: none;
+    margin: 0 .25em .25em 0;
+    display: inline-block;
+    background: #ccc url(images/delete-20.png) no-repeat 3px center;
+}
+
+a.custom-eatb-tag:hover {
+    text-decoration: none;
+    background-color: #8c8c8c;
+    color: #fff;
+}
+
+.custom-eatb-counter-wr label {
+    display: inline;
+}

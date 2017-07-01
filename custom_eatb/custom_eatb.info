@@ -1,0 +1,6 @@
+name = Custom entityreference autocomplete tags better
+description = Custom entityreference autocomplete tags better for speedy process without reload page
+package = Custom
+version = VERSION
+core = 7.x
+dependencies[] = entityreference
